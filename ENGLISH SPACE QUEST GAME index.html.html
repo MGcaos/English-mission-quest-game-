@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>English Mission: Co-op 🚀</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap');
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #050510; color: white; font-family: 'Orbitron', sans-serif; overflow: hidden; touch-action: none; }
+        #menu { position: fixed; inset: 0; background: radial-gradient(circle, #1a1a2e, #050510); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
+        .box { background: rgba(255,255,255,0.05); padding: 25px; border: 2px solid #00f2ff; border-radius: 20px; text-align: center; width: 100%; max-width: 400px; backdrop-filter: blur(10px); }
+        #display-id { background: #000; padding: 12px; border-radius: 10px; margin: 15px 0; border: 1px dashed #ff007b; color: #ff007b; font-weight: bold; font-size: 0.9em; word-break: break-all; }
+        button { background: #00f2ff; color: #000; border: none; padding: 12px; border-radius: 10px; width: 100%; font-weight: bold; cursor: pointer; margin-bottom: 10px; font-family: 'Orbitron'; }
+        input { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #00f2ff; background: #000; color: white; text-align: center; margin-bottom: 10px; box-sizing: border-box; }
+        #hud { position: fixed; top: 10px; width: 100%; text-align: center; z-index: 10; display: none; pointer-events: none; }
+        .mission { background: rgba(0,0,0,0.8); padding: 8px 15px; border-radius: 20px; border: 1px solid #00f2ff; display: inline-block; font-size: 0.8em; }
+        #controls { position: fixed; bottom: 15px; left: 0; right: 0; display: none; justify-content: space-between; padding: 0 20px; z-index: 50; }
+        .btn { width: 65px; height: 65px; background: rgba(255,255,255,0.1); border: 2px solid #00f2ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2em; color: white; user-select: none; backdrop-filter: blur(5px); }
+        #win-screen { position: fixed; inset: 0; background: rgba(5, 5, 16, 0.98); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 200; text-align: center; }
+        #win-screen h1 { font-size: 3.5em; color: #00f2ff; text-shadow: 0 0 30px #00f2ff; margin: 10px; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+    </style>
+</head>
+<body>
+
+<div id="menu">
+    <div class="box">
+        <h2>ENGLISH MISSION</h2>
+        <button onclick="hostGame()">1. GENERA CODICE</button>
+        <div id="display-id">ATTESA...</div>
+        <input type="text" id="join-input" placeholder="Incolla Codice">
+        <button style="background: #ff007b; color: white;" onclick="joinGame()">2. ENTRA</button>
+    </div>
+</div>
+
+<div id="hud"><div class="mission" id="task-info">CARICAMENTO...</div></div>
+
+<div id="win-screen">
+    <h1>MISSION COMPLETE!</h1>
+    <p style="font-size: 1.5em; color: #ff007b;">SQUADRA SPAZIALE VITTORIOSA 🚀</p>
+    <button onclick="softRestart()" style="width: 200px; margin-top: 30px; background: #00f2ff; color: #000;">RIGIOCA</button>
+</div>
+
+<div id="controls">
+    <div style="display: flex; gap: 15px;"><div class="btn" id="l">◀</div><div class="btn" id="r">▶</div></div>
+    <div class="btn" id="j" style="border-color: #ff007b;">JUMP</div>
+</div>
+
+<canvas id="game"></canvas>
+
+<script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const taskInfo = document.getElementById('task-info');
+    const winScreen = document.getElementById('win-screen');
+    const VW = 1000, VH = 1000;
+    
+    let peer, conn, isHost = false, gameRunning = false;
+    let p1 = { x: 100, y: 700, dy: 0, grounded: false, color: '#00f2ff', onGoal: false };
+    let p2 = { x: 150, y: 700, dy: 0, grounded: false, color: '#ff007b', onGoal: false };
+    let bridgeActive = false, elevatorY = 850, elevatorDir = -1, currentLvl = 0;
+    let platformX = 400, platformDir = 1;
+    let wallPulse = 0;
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    
+    function playSnd(freq, type, dur, vol = 0.1) {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + dur);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + dur);
+        osc.onended = () => { osc.disconnect(); gain.disconnect(); };
+    }
+
+    function playWinMusic() {
+        const notes = [261, 329, 392, 523, 659, 783, 1046];
+        notes.forEach((f, i) => {
+            setTimeout(() => playSnd(f, 'triangle', 0.6, 0.08), i * 150);
+        });
+        for(let j=0; j<20; j++) {
+            setTimeout(() => {
+                const noise = audioCtx.createBufferSource();
+                const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.1, audioCtx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+                noise.buffer = buffer;
+                const g = audioCtx.createGain();
+                g.gain.setValueAtTime(0.03, audioCtx.currentTime);
+                g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+                noise.connect(g); g.connect(audioCtx.destination);
+                noise.start();
+            }, 800 + j * 100);
+        }
+    }
+
+    function speak(text) {
+        window.speechSynthesis.cancel();
+        const msg = new SpeechSynthesisUtterance(text);
+        msg.lang = 'en-US'; msg.rate = 0.9;
+        window.speechSynthesis.speak(msg);
+    }
+
+    const levels = [
+        { goal: "RED", type: "bridge", plats: [{c: "#0044ff", x: 300, y: 720}, {v: "", goalColor: "RED", c: "#ff0000", x: 550, y: 640}] },
+        { goal: "GREEN", type: "bridge", plats: [{c: "#ffee00", x: 400, y: 700}, {v: "", goalColor: "GREEN", c: "#00ff00", x: 650, y: 600}] },
+        { goal: "THREE", type: "elevator", plats: [{v: "1", c: "#00f2ff", x: 300, y: 720}, {v: "3", goalColor: "THREE", c: "#ff007b", x: 550, y: 600}] },
+        { goal: "YELLOW", type: "moving", plats: [{c: "#00aaff", x: 250, y: 650}, {v: "", goalColor: "YELLOW", c: "#ffee00", x: 500, y: 550}] },
+        { goal: "PINK", type: "bridge", plats: [{c: "#ffffff", x: 450, y: 750}, {v: "", goalColor: "PINK", c: "#ff007b", x: 700, y: 550}] },
+        { goal: "ONE", type: "elevator", plats: [{v: "2", c: "#333", x: 350, y: 700}, {v: "1", goalColor: "ONE", c: "#ff8800", x: 600, y: 650}] },
+        { goal: "PURPLE", type: "bridge", plats: [{c: "#888", x: 300, y: 720}, {v: "", goalColor: "PURPLE", c: "#aa00ff", x: 580, y: 600}] },
+        { goal: "FINAL", type: "final", plats: [{v: "P1", c: "#00f2ff", x: 300, y: 700}, {v: "P2", c: "#ff007b", x: 650, y: 700}] }
+    ];
+
+    function hostGame() {
+        peer = new Peer();
+        peer.on('open', id => document.getElementById('display-id').innerText = id);
+        peer.on('connection', c => { conn = c; isHost = true; setupConn(); });
+    }
+
+    function joinGame() {
+        const id = document.getElementById('join-input').value;
+        if(!id) return;
+        peer = new Peer();
+        peer.on('open', () => { conn = peer.connect(id); isHost = false; setupConn(); });
+    }
+
+    function setupConn() {
+        conn.on('open', () => {
+            document.getElementById('menu').style.display = 'none';
+            document.getElementById('hud').style.display = 'block';
+            if('ontouchstart' in window) document.getElementById('controls').style.display = 'flex';
+            gameRunning = true; loadLevel(0); requestAnimationFrame(loop);
+        });
+        conn.on('data', d => {
+            if(d.type === 'move') { 
+                if(isHost) { p2.x = d.x; p2.y = d.y; p2.onGoal = d.og; } 
+                else { p1.x = d.x; p1.y = d.y; p1.onGoal = d.og; } 
+            }
+            if(d.type === 'unlock') { bridgeActive = true; playSnd(800, 'sine', 0.2, 0.05); }
+            if(d.type === 'next') loadLevel(d.lvl);
+            if(d.type === 'win') showWin();
+            if(d.type === 'restart') softRestart(false);
+        });
+    }
+
+    function loadLevel(n) {
+        currentLvl = n; bridgeActive = false;
+        p1.x = 100; p2.x = 150; p1.y = 700; p2.y = 700; p1.dy = 0; p2.dy = 0;
+        const msg = (n === levels.length - 1) ? "Final mission: Both on your colors!" : "Touch the " + levels[n].goal;
+        taskInfo.innerText = "MISSION: " + msg;
+        speak(msg);
+    }
+
+    function showWin() {
+        gameRunning = false;
+        winScreen.style.display = 'flex';
+        playWinMusic();
+    }
+
+    function softRestart(sendMsg = true) {
+        winScreen.style.display = 'none';
+        gameRunning = true; loadLevel(0);
+        if(sendMsg && conn) conn.send({type: 'restart'});
+        requestAnimationFrame(loop);
+    }
+
+    const input = {};
+    window.onkeydown = e => { 
+        if((e.code === 'Space' || e.code === 'ArrowUp') && (isHost?p1:p2).grounded) playSnd(440, 'sine', 0.12, 0.05);
+        input[e.code] = true; 
+    };
+    window.onkeyup = e => input[e.code] = false;
+    function bind(id, k) {
+        const el = document.getElementById(id);
+        el.addEventListener('touchstart', (e) => { 
+            e.preventDefault(); 
+            if(k==='Space' && (isHost?p1:p2).grounded) playSnd(440, 'sine', 0.12, 0.05);
+            input[k] = true; 
+        });
+        el.addEventListener('touchend', (e) => { e.preventDefault(); input[k] = false; });
+    }
+    bind('l', 'ArrowLeft'); bind('r', 'ArrowRight'); bind('j', 'Space');
+
+    // --- RIVOLUZIONE GRAFICA PERSONAGGI ---
+    function drawRealAstronaut(p, label, active) {
+        const x = p.x + 17; // centro orizzontale
+        const y = p.y + 27; // centro verticale
+        
+        ctx.save();
+        ctx.shadowBlur = active ? 30 : 10;
+        ctx.shadowColor = active ? "#00ff44" : p.color;
+
+        // 1. Gambe e Piedi
+        ctx.fillStyle = "white";
+        ctx.fillRect(x - 12, y + 15, 8, 12); // gamba sx
+        ctx.fillRect(x + 4, y + 15, 8, 12);  // gamba dx
+        ctx.fillStyle = "#333";
+        ctx.fillRect(x - 14, y + 23, 10, 5); // piede sx
+        ctx.fillRect(x + 4, y + 23, 10, 5);  // piede dx
+
+        // 2. Corpo (Tuta)
+        ctx.fillStyle = "white";
+        ctx.beginPath();
+        ctx.ellipse(x, y + 5, 18, 22, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = p.color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // 3. Zaino OS (Oxygen Tank)
+        ctx.fillStyle = "#ddd";
+        ctx.fillRect(x - 22, y - 5, 8, 25);
+
+        // 4. Casco (Sferico)
+        ctx.fillStyle = "white";
+        ctx.beginPath();
+        ctx.arc(x, y - 15, 16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // 5. Visiera (Specchiata)
+        ctx.fillStyle = "#1a1a1a";
+        ctx.beginPath();
+        ctx.ellipse(x, y - 16, 12, 9, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Riflesso visiera
+        ctx.fillStyle = "rgba(255,255,255,0.2)";
+        ctx.beginPath();
+        ctx.arc(x + 4, y - 19, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 6. Dettaglio Colore Squadra (Striscia sul braccio/corpo)
+        ctx.fillStyle = p.color;
+        ctx.fillRect(x - 5, y - 2, 10, 4);
+
+        // Etichetta testo
+        ctx.fillStyle = "white";
+        ctx.font = "bold 13px Orbitron";
+        ctx.textAlign = "center";
+        ctx.shadowBlur = 0;
+        ctx.fillText(label, x, y - 40);
+
+        ctx.restore();
+    }
+
+    function loop() {
+        if(!gameRunning) return;
+        canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+        let scale = Math.min(canvas.width / VW, canvas.height / VH);
+        let offsetX = (canvas.width - VW * scale) / 2;
+        let offsetY = (canvas.height - VH * scale) / 2;
+
+        elevatorY += elevatorDir * 3.5;
+        if(elevatorY < 400 || elevatorY > 850) elevatorDir *= -1;
+        platformX += platformDir * 4.5;
+        if(platformX < 350 || platformX > 750) platformDir *= -1;
+        wallPulse += 0.08;
+
+        let me = isHost ? p1 : p2;
+        if(input['ArrowLeft']) me.x -= 9; if(input['ArrowRight']) me.x += 9;
+        if((input['Space'] || input['ArrowUp']) && me.grounded) { me.dy = -25; me.grounded = false; }
+        me.dy += 1.1; me.y += me.dy; me.grounded = false;
+        me.onGoal = false;
+
+        let allPlats = [{ x: 0, y: 850, w: 300, h: 150 }, { x: 850, y: 850, w: 150, h: 150 }];
+        if(!bridgeActive && currentLvl < levels.length - 1) {
+            allPlats.push({ x: 830, y: 50, w: 8, h: 800, c: "#bc13fe", isWall: true });
+        }
+
+        levels[currentLvl].plats.forEach(p => allPlats.push({ ...p, w: 160, h: 45, isObjective: true }));
+        
+        if(bridgeActive) {
+            if(levels[currentLvl].type === "bridge") allPlats.push({ x: 300, y: 850, w: 550, h: 25, isBridge: true, c: "#00f2ff" });
+            else if(levels[currentLvl].type === "elevator") allPlats.push({ x: 720, y: elevatorY, w: 130, h: 25, isElevator: true, c: "#ff007b" });
+            else if(levels[currentLvl].type === "moving") allPlats.push({ x: platformX, y: 750, w: 180, h: 25, isMoving: true, c: "#00ff44" });
+        }
+
+        allPlats.forEach(p => {
+            if(p.isWall) {
+                if(me.x + 35 > p.x && me.x < p.x + p.w && me.y + 55 > p.y && me.y < p.y + p.h) {
+                    me.x = p.x - 35;
+                }
+            }
+            if(me.x + 35 > p.x && me.x < p.x + p.w && me.y + 55 > p.y && me.y + 55 < p.y + 35 && me.dy >= 0) {
+                me.y = p.y - 55; me.dy = 0; me.grounded = true;
+                if(p.isElevator) me.y += elevatorDir * 3.5;
+                if(p.isMoving) me.x += platformDir * 4.5;
+                if(p.isObjective && !bridgeActive && currentLvl < levels.length - 1 && p.goalColor === levels[currentLvl].goal) {
+                    bridgeActive = true; playSnd(880, 'sine', 0.2, 0.05);
+                    if(conn) conn.send({type: 'unlock'});
+                }
+                if(currentLvl === levels.length - 1 && p.isObjective) {
+                    if((isHost && p.v === "P1") || (!isHost && p.v === "P2")) me.onGoal = true;
+                }
+            }
+        });
+
+        if(currentLvl === levels.length - 1 && p1.onGoal && p2.onGoal) { showWin(); if(conn) conn.send({type:'win'}); }
+        if(me.y > VH) { me.x = 100; me.y = 700; me.dy = 0; }
+        if(bridgeActive && p1.x > 850 && p2.x > 850 && currentLvl < levels.length - 1) {
+            let n = currentLvl + 1; loadLevel(n); if(conn) conn.send({type:'next', lvl: n});
+        }
+        if(conn) conn.send({type: 'move', x: me.x, y: me.y, og: me.onGoal});
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.save(); ctx.translate(offsetX, offsetY); ctx.scale(scale, scale);
+        ctx.fillStyle = '#050510'; ctx.fillRect(0,0,VW,VH);
+        for(let i=0; i<30; i++) { ctx.fillStyle="rgba(255,255,255,0.3)"; ctx.fillRect((i*77)%VW, (i*123)%VH, 2, 2); }
+
+        allPlats.forEach(p => {
+            if(p.isWall) {
+                let glow = 15 + Math.sin(wallPulse * 2) * 10;
+                ctx.shadowBlur = glow; ctx.shadowColor = "#bc13fe";
+                ctx.fillStyle = "#bc13fe";
+                ctx.fillRect(p.x, p.y, p.w, p.h);
+                return;
+            }
+            ctx.shadowBlur = 15; ctx.shadowColor = p.c || "#00f2ff";
+            ctx.fillStyle = "#1a1a2e"; ctx.fillRect(p.x, p.y, p.w, p.h);
+            ctx.strokeStyle = p.c || "#00f2ff"; ctx.lineWidth = 3; ctx.strokeRect(p.x, p.y, p.w, p.h);
+            if(p.v && p.v !== "") {
+                ctx.fillStyle = "white"; ctx.font = "bold 24px Orbitron"; ctx.textAlign = "center";
+                ctx.fillText(p.v, p.x + p.w/2, p.y + 32);
+            }
+        });
+
+        // DISEGNO ASTRONAUTI EVOLUTI
+        drawRealAstronaut(p1, isHost ? "YOU" : "TEAM", p1.onGoal); 
+        drawRealAstronaut(p2, !isHost ? "YOU" : "TEAM", p2.onGoal);
+        
+        ctx.restore();
+        requestAnimationFrame(loop);
+    }
+</script>
+</body>
+</html>
